@@ -73,13 +73,11 @@
 
   // Theme
   const root = document.documentElement;
-  const media = window.matchMedia('(prefers-color-scheme: dark)');
-  const isDark = () => (root.dataset.theme ? root.dataset.theme === 'dark' : media.matches);
+  const isDark = () => root.dataset.theme === 'dark';
   const notify = () => window.dispatchEvent(new Event('algosim:theme'));
   document.getElementById('theme-toggle').addEventListener('click', () => {
     root.dataset.theme = isDark() ? 'light' : 'dark';
     try { localStorage.setItem('algosim-theme', root.dataset.theme); } catch (e) {}
     notify();
   });
-  media.addEventListener('change', notify);
 })(window.AlgoSim);
