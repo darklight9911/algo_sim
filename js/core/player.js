@@ -23,6 +23,7 @@
   class Player {
     constructor(host, opts) {
       this.onRender = opts.onRender;
+      this.guard = opts.guard || null; // (from, to) -> false blocks stepping forward (e.g. quiz questions)
       this.speed = opts.speed || 4;
       this.total = 1;
       this.index = 0;
@@ -87,6 +88,7 @@
 
     go(i) {
       i = Math.max(0, Math.min(this.total - 1, i | 0));
+      if (this.guard && i === this.index + 1 && !this.guard(this.index, i)) { this.pause(); return; }
       this.index = i;
       this.scrub.value = String(i);
       const pct = this.total > 1 ? (i / (this.total - 1)) * 100 : 0;

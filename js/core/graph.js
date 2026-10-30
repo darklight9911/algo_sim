@@ -136,7 +136,7 @@
     const nodeEls = {};
     P.names.forEach((n) => {
       const { x, y, side } = P.nodes[n];
-      const g = svgEl('g', { class: 'node', transform: `translate(${x} ${y})`, tabindex: 0, role: 'button', 'aria-label': P.label(n) });
+      const g = svgEl('g', { class: 'node', transform: `translate(${x} ${y})`, tabindex: 0, role: 'button', 'aria-label': P.label(n), 'data-node': n });
       const r = tree ? 20 : 9;
       g.append(svgEl('circle', { class: 'halo', r }));
       g.append(svgEl('circle', { class: 'ring', r: r + 5 }));

@@ -65,6 +65,7 @@
           ${aboutHTML(cfg)}
         </div>
         <aside class="inspector">
+          <section class="card quiz-card" data-ref="quiz" aria-live="polite" hidden></section>
           <section class="card step-card" data-ref="step" aria-live="polite"></section>
           ${mode === 'bidi' ? `
             <section class="card"><header class="card-head"><h3>Forward queue</h3><span class="count" data-ref="fcount"></span></header><p class="card-hint" data-ref="fhint"></p><div data-ref="frontier"></div></section>
@@ -78,7 +79,7 @@
       </div>`;
 
     const $ = (r) => host.querySelector(`[data-ref="${r}"]`);
-    const player = new ns.Player($('player'), { onRender: render, speed: cfg.speed || 3 });
+    const player = new ns.Player($('player'), { onRender: render, speed: cfg.speed || 3, guard: (from, to) => quizGuard(to) });
 
     // Animated frontier (queue / stack / priority queue)
     const dsKind = { bfs: 'queue', bidi: 'queue', dfs: 'stack', dls: 'stack', ids: 'stack' }[mode] || 'pq';
@@ -89,6 +90,109 @@
     });
     const dsB = mode === 'bidi' ? ns.DSView($('dsB'), { kind: 'queue', title: 'Backward queue · from goal' }) : null;
     let lastIdx = -1;
+
+    /* ---------- Quiz mode: predict the next node before it is revealed ---------- */
+    let quiz = false;
+    try { quiz = localStorage.getItem('algosim-quiz') === '1'; } catch (e) {}
+    let pending = null;
+    let feedback = null;
+    const answered = new Set();
+    const score = { right: 0, total: 0 };
+    const RULE = {
+      bfs: 'BFS always takes the node at the <b>front of the queue</b>: the one that has waited longest.',
+      dfs: 'DFS always pops the node on <b>top of the stack</b>: the one added most recently.',
+      dls: 'Depth-limited search pops the node on <b>top of the stack</b>, like DFS.',
+      ids: 'Each iteration is a depth-limited DFS, so it pops the node on <b>top of the stack</b>.',
+      bidi: 'Each side is a BFS, so it takes the <b>front of its own queue</b>. The two sides take turns, one layer at a time.',
+      ucs: 'UCS always removes the node with the <b>lowest g</b>: the cheapest path so far.',
+      greedy: 'Greedy always removes the node with the <b>lowest h</b>: the one that looks closest to the goal.',
+      astar: 'A* always removes the node with the <b>lowest f = g + h</b>.',
+    }[mode];
+    const VERB = { queue: 'take out of the queue', stack: 'pop off the stack', pq: 'remove from the priority queue' }[dsKind];
+
+    function question(idx) {
+      const nx = steps[idx], prev = steps[idx - 1];
+      if (!nx || !prev || !nx.current) return null;
+      let list;
+      if (mode === 'bidi') {
+        if (nx.kind !== 'expand' && nx.kind !== 'done') return null;
+        list = nx.side === 'b' ? prev.frontierB : prev.frontier;
+      } else if (mode === 'dls' || mode === 'ids') {
+        if (!['expand', 'cutoff', 'done'].includes(nx.kind) || nx.iteration !== prev.iteration) return null;
+        list = prev.frontier;
+      } else {
+        if (!(nx.kind === 'select' || (nx.kind === 'done' && mode !== 'bfs'))) return null;
+        list = prev.frontier;
+      }
+      if (!list || new Set(list.map((e) => e.n)).size < 2) return null; // no real choice
+      return { idx, answer: nx.current, list, tried: false };
+    }
+
+    function quizGuard(to) {
+      if (!quiz || answered.has(to)) return true;
+      const q = question(to);
+      if (!q) return true;
+      pending = q;
+      feedback = null;
+      renderQuiz();
+      return false;
+    }
+
+    function answer(n) {
+      const q = pending;
+      if (!q) return;
+      const pick = q.list.find((e) => e.n === n);
+      const right = q.list.find((e) => e.n === q.answer);
+      const tie = pqKey && pick && right && pick[pqKey] === right[pqKey] && n !== q.answer;
+      const ok = n === q.answer || tie;
+      if (!q.tried) { score.total++; if (ok) score.right++; q.tried = true; }
+      if (ok) {
+        feedback = { ok: true, text: tie
+          ? `Good thinking: <b>${P.label(n)}</b> ties with <b>${P.label(q.answer)}</b> (${pqKey} = ${right[pqKey]}). The algorithm breaks the tie and takes <b>${P.label(q.answer)}</b>.`
+          : `Correct! ${RULE}` };
+        reveal(q, true);
+      } else {
+        feedback = { ok: false, text: pick
+          ? `Not quite. ${RULE} Try again.`
+          : `<b>${P.label(n)}</b> is not waiting in the frontier. Pick one of the glowing nodes.` };
+        const el = $('svg').querySelector(`[data-node="${n}"]`);
+        if (el) { el.classList.remove('is-wrong'); void el.getBBox(); el.classList.add('is-wrong'); }
+        renderQuiz();
+      }
+    }
+
+    function reveal(q, keepFeedback) {
+      if (!q) return;
+      if (!keepFeedback) {
+        if (!q.tried) { score.total++; q.tried = true; }
+        feedback = { ok: null, text: `It was <b>${P.label(q.answer)}</b>. ${RULE}` };
+      }
+      answered.add(q.idx);
+      pending = null;
+      player.go(q.idx);
+      renderQuiz();
+    }
+
+    function renderQuiz() {
+      const box = $('quiz');
+      box.hidden = !quiz;
+      host.classList.toggle('quiz-asking', !!pending);
+      if (!quiz) return;
+      const head = `<div class="quiz-head"><span class="quiz-title">Quiz mode</span><span class="quiz-score">${score.right} / ${score.total} correct</span></div>`;
+      let bodyHTML;
+      if (pending) {
+        bodyHTML = `<p class="quiz-q">Your turn: which node will the algorithm <b>${VERB}</b> next?</p>
+          <p class="quiz-sub">Click it on the graph or in the ${dsKind === 'pq' ? 'priority queue' : dsKind} strip.</p>
+          ${feedback ? `<div class="quiz-fb ${feedback.ok === false ? 'bad' : 'ok'}">${feedback.text}</div>` : ''}
+          <button class="btn quiz-reveal" type="button" data-ref="reveal">Show me the answer</button>`;
+      } else if (feedback) {
+        bodyHTML = `<div class="quiz-fb ${feedback.ok ? 'ok' : 'info'}">${feedback.text}</div>`;
+      } else {
+        bodyHTML = '<p class="quiz-sub">Press <kbd>→</kbd> or play. Before each choice the simulation stops and asks you to predict the next node.</p>';
+      }
+      box.innerHTML = head + bodyHTML;
+      if ($('reveal')) $('reveal').addEventListener('click', () => reveal(pending, false));
+    }
 
     function buildToolbar() {
       const opts = (sel, skip) => P.names.filter((n) => n !== skip).slice().sort()
@@ -102,7 +206,14 @@
           : `<label class="field"><span>Goal</span><select class="select" data-ref="goal">${opts(goal)}</select></label>`}
         ${mode === 'dls' ? `<span class="sep"></span><div class="field"><span>Depth limit l</span>
           <div class="stepper"><button type="button" data-ref="lminus" aria-label="Decrease">−</button><b data-ref="lval">${limit}</b><button type="button" data-ref="lplus" aria-label="Increase">+</button></div></div>` : ''}
+        <label class="switch quiz-switch" title="Predict each next node before it is revealed"><input type="checkbox" data-ref="quizOn"${quiz ? ' checked' : ''}><span class="switch-track"></span>Quiz me</label>
         <span class="toolbar-hint">${goalFixed ? 'Click a city to start from it' : 'Click a node to make it the goal'}</span>`;
+      $('quizOn').addEventListener('change', (e) => {
+        quiz = e.target.checked;
+        try { localStorage.setItem('algosim-quiz', quiz ? '1' : '0'); } catch (err) {}
+        pending = null; feedback = null;
+        renderQuiz();
+      });
 
       if ($('prob')) $('prob').addEventListener('change', (e) => { P = ns.problems[e.target.value]; start = P.start; goal = goalFixed ? P.hGoal : P.goal; setup(); });
       $('start').addEventListener('change', (e) => { start = e.target.value; run(); });
@@ -115,9 +226,15 @@
     }
 
     function onNodeClick(n) {
+      if (pending) { answer(n); return; }
       if (goalFixed) { if (n !== goal && n !== start) { start = n; $('start').value = n; run(); } }
       else if (n !== goal) { goal = n; $('goal').value = n; run(); }
     }
+
+    host.querySelector('.ds-wrap').addEventListener('click', (e) => {
+      const it = e.target.closest('.ds-item');
+      if (it && pending && it.dataset.node) answer(it.dataset.node);
+    });
 
     function setup() {
       if (goalFixed) goal = P.hGoal;
@@ -129,6 +246,10 @@
     function run() {
       player.pause();
       lastIdx = -1;
+      pending = null; feedback = null;
+      answered.clear();
+      score.right = 0; score.total = 0;
+      renderQuiz();
       if ($('start')) $('start').value = start;
       if (mode === 'dls') steps = ns.depthLimited(P, start, goal, limit);
       else if (mode === 'ids') steps = ns.iterativeDeepening(P, start, goal);
@@ -204,6 +325,7 @@
         const a = active ? changed.get(e.n) : null;
         return {
           key: `${side}:${st.iteration != null ? st.iteration : ''}:${e.order}`,
+          node: e.n,
           label: P.label(e.n),
           sub: pqKey ? `${pqKey} ${e[pqKey]}` : `d ${e.d}`,
           cls: [

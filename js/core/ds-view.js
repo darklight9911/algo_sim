@@ -17,7 +17,7 @@
     const kind = opts.kind;
     const E = ENDS[kind];
     host.innerHTML = `
-      <section class="card ds-card">
+      <section class="card ds-card" title="${E.hint}">
         <div class="ds-head">
           <h3>${opts.title}</h3>
           <span class="ds-op" aria-live="polite"></span>
@@ -27,7 +27,6 @@
           <div class="ds-items"><span class="ds-empty">empty</span></div>
           <div class="ds-end ds-right"><b>${E.right[0]}</b><span>${E.right[1]}</span></div>
         </div>
-        <p class="ds-hint">${E.hint}</p>
       </section>`;
     const box = host.querySelector('.ds-items');
     const opEl = host.querySelector('.ds-op');
@@ -74,6 +73,7 @@
         items.forEach((it) => {
           let el = els.get(it.key);
           if (!el) { el = make(it); els.set(it.key, el); if (anim) entering.push(el); }
+          if (it.node) el.dataset.node = it.node;
           el.querySelector('.l').textContent = it.label;
           el.querySelector('.s').textContent = it.sub || '';
           el.className = 'ds-item ' + (it.cls || '');
