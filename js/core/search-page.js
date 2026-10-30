@@ -60,6 +60,7 @@
             <svg data-ref="svg" role="img"></svg>
             <div class="legend">${legendHTML(mode)}</div>
           </div>
+          <div class="ds-wrap${mode === 'bidi' ? ' ds-pair' : ''}"><div data-ref="ds"></div>${mode === 'bidi' ? '<div data-ref="dsB"></div>' : ''}</div>
           <div data-ref="player"></div>
           ${aboutHTML(cfg)}
         </div>
@@ -78,6 +79,16 @@
 
     const $ = (r) => host.querySelector(`[data-ref="${r}"]`);
     const player = new ns.Player($('player'), { onRender: render, speed: cfg.speed || 3 });
+
+    // Animated frontier (queue / stack / priority queue)
+    const dsKind = { bfs: 'queue', bidi: 'queue', dfs: 'stack', dls: 'stack', ids: 'stack' }[mode] || 'pq';
+    const pqKey = { ucs: 'g', greedy: 'h', astar: 'f' }[mode];
+    const ds = ns.DSView($('ds'), {
+      kind: dsKind,
+      title: mode === 'bidi' ? 'Forward queue · from start' : { queue: 'Queue · FIFO', stack: 'Stack · LIFO', pq: `Priority queue · ordered by ${pqKey}` }[dsKind],
+    });
+    const dsB = mode === 'bidi' ? ns.DSView($('dsB'), { kind: 'queue', title: 'Backward queue · from goal' }) : null;
+    let lastIdx = -1;
 
     function buildToolbar() {
       const opts = (sel, skip) => P.names.filter((n) => n !== skip).slice().sort()
@@ -117,6 +128,7 @@
 
     function run() {
       player.pause();
+      lastIdx = -1;
       if ($('start')) $('start').value = start;
       if (mode === 'dls') steps = ns.depthLimited(P, start, goal, limit);
       else if (mode === 'ids') steps = ns.iterativeDeepening(P, start, goal);
@@ -170,6 +182,12 @@
       view.render(v);
 
       renderStep(st, idx);
+      const animate = Math.abs(idx - lastIdx) === 1;
+      lastIdx = idx;
+      if (mode === 'bidi') {
+        ds.render(dsItems(st, st.frontier, 'f'), { op: opText(st, 'f'), animate });
+        dsB.render(dsItems(st, st.frontierB, 'b'), { op: opText(st, 'b'), animate });
+      } else ds.render(dsItems(st, st.frontier, 'f'), { op: opText(st, 'f'), animate });
       if (mode === 'bidi') {
         renderFrontier(st, st.frontier, 'frontier', 'fcount', st.side === 'f');
         renderFrontier(st, st.frontierB, 'frontierB', 'bcount', st.side === 'b');
@@ -177,6 +195,54 @@
         $('bhint').innerHTML = `From <b>${P.label(goal)}</b> · front of the queue at the top`;
       } else renderFrontier(st, st.frontier, 'frontier', 'fcount', true);
       renderExplored(st);
+    }
+
+    function dsItems(st, list, side) {
+      const active = !st.side || st.side === side;
+      const changed = new Map((st.changes || []).map((c) => [c.n, c.action]));
+      const items = list.map((e, k) => {
+        const a = active ? changed.get(e.n) : null;
+        return {
+          key: `${side}:${st.iteration != null ? st.iteration : ''}:${e.order}`,
+          label: P.label(e.n),
+          sub: pqKey ? `${pqKey} ${e[pqKey]}` : `d ${e.d}`,
+          cls: [
+            k === 0 && active && st.kind === 'select' ? 'is-next' : '',
+            a === 'added' || a === 'goal' || a === 'meet' ? 'is-new' : '',
+            a === 'updated' ? 'is-updated' : '',
+            e.n === goal && side === 'f' ? 'is-goal' : '',
+          ].join(' '),
+        };
+      });
+      return dsKind === 'stack' ? items.reverse() : items;
+    }
+
+    function opText(st, side) {
+      if (st.side && st.side !== side && st.kind === 'expand') return '';
+      const B = (n) => `<b>${P.label(n)}</b>`;
+      const list = (acts) => (st.changes || []).filter((c) => acts.includes(c.action)).map((c) => B(c.n)).join(', ');
+      const added = list(['added', 'goal', 'meet']);
+      const upd = list(['updated']);
+      const first = mode === 'bidi' ? (side === 'f' ? start : goal) : start;
+      switch (st.kind) {
+        case 'init': return { queue: 'enqueue', stack: 'push', pq: 'insert' }[dsKind] + ' ' + B(first) + (st.iteration != null ? ` · new iteration, l = ${st.limit}` : '');
+        case 'select': {
+          const e = st.frontier[0];
+          return { queue: `dequeue ${B(e.n)} from the front`, stack: `pop ${B(e.n)} from the top`, pq: `remove ${B(e.n)}: lowest ${pqKey} = ${e[pqKey]}` }[dsKind];
+        }
+        case 'expand': {
+          const pop = mode === 'dls' || mode === 'ids' ? `pop ${B(st.current)} · ` : mode === 'bidi' ? `dequeue ${B(st.current)} · ` : '';
+          if (!added && !upd) return pop + 'nothing new to add';
+          const pushed = (st.changes || []).filter((c) => c.action === 'added').map((c) => B(c.n));
+          const stackOp = pushed.length ? `push ${pushed.slice().reverse().join(', ')} · ${pushed[0]} is now on top` : '';
+          return pop + ({ queue: added ? `enqueue ${added} at the back` : '', stack: stackOp, pq: added ? `insert ${added} in sorted order` : '' }[dsKind]) +
+            (upd ? `${added ? ' · ' : ''}update ${upd} (cheaper)` : '');
+        }
+        case 'cutoff': return `pop ${B(st.current)} · depth limit reached, push nothing`;
+        case 'done': return mode === 'bidi' ? 'the two searches met ✓' : 'goal reached ✓';
+        case 'fail': return 'no solution';
+        default: return '';
+      }
     }
 
     function renderStep(st, idx) {
